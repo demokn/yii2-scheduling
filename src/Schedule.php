@@ -5,8 +5,6 @@ namespace omnilight\scheduling;
 use Yii;
 use yii\base\Component;
 use yii\base\Application;
-use yii\mutex\FileMutex;
-
 
 /**
  * Class Schedule
@@ -21,11 +19,11 @@ class Schedule extends Component
     protected $_events = [];
 
     /**
-     * The mutex implementation.
+     * The event mutex implementation.
      *
-     * @var \yii\mutex\Mutex
+     * @var EventMutex
      */
-    protected $_mutex;
+    public $eventMutex;
 
     /**
      * @var string The name of cli script
@@ -34,13 +32,16 @@ class Schedule extends Component
 
     /**
      * Schedule constructor.
+     *
      * @param array $config
      */
     public function __construct(array $config = [])
     {
-        $this->_mutex = Yii::$app->has('mutex') ? Yii::$app->get('mutex') : (new FileMutex());
-
         parent::__construct($config);
+
+        $this->eventMutex = !is_null($this->eventMutex)
+            ? Yii::createObject($this->eventMutex)
+            : Yii::createObject(CacheEventMutex::className());
     }
 
     /**
@@ -52,9 +53,10 @@ class Schedule extends Component
      */
     public function call($callback, array $parameters = array())
     {
-        $this->_events[] = $event = new CallbackEvent($this->_mutex, $callback, $parameters);
+        $this->_events[] = $event = new CallbackEvent($this->eventMutex, $callback, $parameters);
         return $event;
     }
+
     /**
      * Add a new cli command event to the schedule.
      *
@@ -74,7 +76,7 @@ class Schedule extends Component
      */
     public function exec($command)
     {
-        $this->_events[] = $event = new Event($this->_mutex, $command);
+        $this->_events[] = $event = new Event($this->eventMutex, $command);
         return $event;
     }
 
@@ -91,8 +93,7 @@ class Schedule extends Component
      */
     public function dueEvents(Application $app)
     {
-        return array_filter($this->_events, function(Event $event) use ($app)
-        {
+        return array_filter($this->_events, function(Event $event) use ($app) {
             return $event->isDue($app);
         });
     }

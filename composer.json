@@ -29,7 +29,10 @@
   "autoload": {
     "psr-4": {
       "omnilight\\scheduling\\": "src"
-    }
+    },
+    "files": [
+      "src/Helpers.php"
+    ]
   },
   "extra": {
     "bootstrap": "omnilight\\scheduling\\Bootstrap"

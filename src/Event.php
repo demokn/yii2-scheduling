@@ -9,9 +9,8 @@ use yii\base\Application;
 use yii\base\Component;
 use yii\base\InvalidCallException;
 use yii\base\InvalidConfigException;
+use yii\caching\FileCache;
 use yii\mail\MailerInterface;
-use yii\mutex\Mutex;
-use yii\mutex\FileMutex;
 
 /**
  * Class Event
@@ -81,9 +80,9 @@ class Event extends Component
      */
     protected $_description;
     /**
-     * The mutex implementation.
+     * The event mutex implementation.
      *
-     * @var \yii\mutex\Mutex
+     * @var EventMutex
      */
     protected $_mutex;
 
@@ -95,13 +94,41 @@ class Event extends Component
     protected $_omitErrors = false;
 
     /**
+     * The minutes of time the mutex should be valid.
+     *
+     * @var int
+     */
+    protected $_expiresAt = 1440;
+
+    /**
+     * Indicates if the command should not overlap itself.
+     *
+     * @var bool
+     */
+    protected $_withoutOverlapping = false;
+
+    /**
+     * Indicates if the command should run in background.
+     *
+     * @var bool
+     */
+    protected $_runInBackground = false;
+
+    /**
+     * The schedule file where the event locates, required when run command in background.
+     *
+     * @var string
+     */
+    protected $_scheduleFile;
+
+    /**
      * Create a new event instance.
      *
-     * @param Mutex $mutex
+     * @param EventMutex $mutex
      * @param string $command
      * @param array $config
      */
-    public function __construct(Mutex $mutex, $command, $config = [])
+    public function __construct(EventMutex $mutex, $command, $config = [])
     {
         $this->command = $command;
         $this->_mutex = $mutex;
@@ -115,12 +142,16 @@ class Event extends Component
      */
     public function run(Application $app)
     {
-        $this->trigger(self::EVENT_BEFORE_RUN);
-        if (count($this->_afterCallbacks) > 0) {
-            $this->runCommandInForeground($app);
-        } else {
-            $this->runCommandInBackground($app);
+        if ($this->_withoutOverlapping && !$this->_mutex->create($this)) {
+            return;
         }
+
+        $this->trigger(self::EVENT_BEFORE_RUN);
+
+        $this->_runInBackground
+            ? $this->runCommandInBackground($app)
+            : $this->runCommandInForeground($app);
+
         $this->trigger(self::EVENT_AFTER_RUN);
     }
 
@@ -129,9 +160,19 @@ class Event extends Component
      *
      * @return string
      */
-    protected function mutexName()
+    public function mutexName()
     {
         return 'framework/schedule-' . sha1($this->_expression . $this->command);
+    }
+
+    /**
+     * Get the minutes of time the mutex should be valid.
+     *
+     * @return int
+     */
+    public function getExpiresAt()
+    {
+        return $this->_expiresAt;
     }
 
     /**
@@ -141,21 +182,64 @@ class Event extends Component
      */
     protected function runCommandInForeground(Application $app)
     {
-        (new Process(
-            trim($this->buildCommand(), '& '), dirname($app->request->getScriptFile()), null, null, null
-        ))->run();
+        Process::fromShellCommandline($this->buildCommand(), dirname($app->request->getScriptFile()), null, null, null)->run();
+
         $this->callAfterCallbacks($app);
     }
 
     /**
-     * Build the comand string.
+     * Build the command string.
      *
      * @return string
      */
     public function buildCommand()
     {
-        $command = $this->command . $this->_redirect . $this->_output . (($this->_omitErrors) ? ' 2>&1 &' : '');
-        return $this->_user ? 'sudo -u ' . $this->_user . ' ' . $command : $command;
+        if ($this->_runInBackground) {
+            return $this->buildBackgroundCommand();
+        }
+
+        return $this->buildForegroundCommand();
+    }
+
+    /**
+     * Build the command for running the event in the foreground.
+     *
+     * @return string
+     */
+    protected function buildForegroundCommand()
+    {
+        $command = $this->command . $this->_redirect . $this->_output . ($this->_omitErrors ? ' 2>&1' : '');
+
+        return $this->ensureCorrectUser($command);
+    }
+
+    /**
+     * Build the command for running the event in the background.
+     *
+     * @return string
+     */
+    protected function buildBackgroundCommand()
+    {
+        $finished = PHP_BINARY . ' yii ' . 'schedule/finish' . ' "' . $this->mutexName() . '"'
+            . ' --scheduleFile="' . $this->_scheduleFile . '"';
+
+        $command = $this->command . $this->_redirect . $this->_output . ($this->_omitErrors ? ' 2>&1' : '');
+
+        return $this->ensureCorrectUser('(' . $command . (window_os() ? ' & ' : ' ; ') . $finished . ')'
+            . ' > ' . $this->getDefaultOutput() . ' 2>&1 &');
+    }
+
+    /**
+     * Finalize the event's command syntax with the correct user.
+     *
+     * @param string $command
+     * @return string
+     */
+    protected function ensureCorrectUser($command)
+    {
+        return ($this->_user && !window_os())
+            ? 'sudo -u ' . $this->_user . ' -- sh -c \'' . $command . '\''
+            : $command;
     }
 
     /**
@@ -163,7 +247,7 @@ class Event extends Component
      *
      * @param Application $app
      */
-    protected function callAfterCallbacks(Application $app)
+    public function callAfterCallbacks(Application $app)
     {
         foreach ($this->_afterCallbacks as $callback) {
             call_user_func($callback, $app);
@@ -177,8 +261,7 @@ class Event extends Component
      */
     protected function runCommandInBackground(Application $app)
     {
-        chdir(dirname($app->request->getScriptFile()));
-        exec($this->buildCommand());
+        Process::fromShellCommandline($this->buildCommand(), dirname($app->request->getScriptFile()), null, null, null)->run();
     }
 
     /**
@@ -527,14 +610,19 @@ class Event extends Component
     /**
      * Do not allow the event to overlap each other.
      *
+     * @param int $expiresAt
      * @return $this
      */
-    public function withoutOverlapping()
+    public function withoutOverlapping($expiresAt = 1440)
     {
-        return $this->then(function() {
-            $this->_mutex->release($this->mutexName());
-        })->skip(function() {
-            return !$this->_mutex->acquire($this->mutexName());
+        $this->_withoutOverlapping = true;
+
+        $this->_expiresAt = $expiresAt;
+
+        return $this->then(function () {
+            $this->_mutex->forget($this);
+        })->skip(function () {
+            return $this->_mutex->exists($this);
         });
     }
 
@@ -545,8 +633,8 @@ class Event extends Component
      */
     public function onOneServer()
     {
-        if ($this->_mutex instanceof FileMutex) {
-            throw new InvalidConfigException('You must config mutex in the application component, except the FileMutex.');
+        if ($this->_mutex instanceof CacheEventMutex && $this->_mutex->getCache() instanceof FileCache) {
+            throw new InvalidConfigException('You must config cache component in your application, except the FileCache.');
         }
 
         return $this->withoutOverlapping();
@@ -679,6 +767,20 @@ class Event extends Component
     }
 
     /**
+     * State that the command should run in background.
+     *
+     * @param string $scheduleFile
+     * @return $this
+     */
+    public function runInBackground($scheduleFile)
+    {
+        $this->_runInBackground = true;
+        $this->_scheduleFile = $scheduleFile;
+
+        return $this;
+    }
+
+    /**
      * Set the human-friendly description of the event.
      *
      * @param  string $description
@@ -713,10 +815,6 @@ class Event extends Component
 
     public function getDefaultOutput()
     {
-        if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
-            return 'NUL';
-        } else {
-            return '/dev/null';
-        }
+        return window_os() ? 'NUL' : '/dev/null';
     }
 }

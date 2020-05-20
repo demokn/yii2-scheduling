@@ -4,7 +4,6 @@ namespace omnilight\scheduling;
 use yii\console\Controller;
 use yii\di\Instance;
 
-
 /**
  * Run the scheduled commands
  */
@@ -27,7 +26,8 @@ class ScheduleController extends Controller
     public function options($actionID)
     {
         return array_merge(parent::options($actionID),
-            $actionID == 'run' ? ['scheduleFile', 'omitErrors'] : []
+            $actionID == 'run' ? ['scheduleFile', 'omitErrors'] : [],
+            $actionID == 'finish' ? ['scheduleFile'] : []
         );
     }
 
@@ -55,10 +55,23 @@ class ScheduleController extends Controller
             $event->run(\Yii::$app);
         }
 
-        if (count($events) === 0)
-        {
+        if (count($events) === 0) {
             $this->stdout("No scheduled commands are ready to run.\n");
         }
+    }
+
+    public function actionFinish($id)
+    {
+        $this->importScheduleFile();
+
+        $events = array_filter($this->schedule->getEvents(), function (Event $event) use ($id) {
+            return $event->mutexName() === $id;
+        });
+
+        $app = \Yii::$app;
+        array_walk($events, function (Event $event) use ($app) {
+            $event->callAfterCallbacks($app);
+        });
     }
 
     protected function importScheduleFile()

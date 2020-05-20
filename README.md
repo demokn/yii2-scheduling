@@ -151,26 +151,17 @@ $schedule->command('foo')->sendOutputTo($filePath)->emailOutputTo('foo@example.c
 ```php
 $schedule->command('foo')->withoutOverlapping();
 ```
-Used by default yii\mutex\FileMutex or 'mutex' application component (http://www.yiiframework.com/doc-2.0/yii-mutex-mutex.html)
+
+If needed, you may specify how many minutes must pass before the "without overlapping" lock expires.
+By default, the lock will expire after 24 hours:
+
+```php
+$schedule->command('foo')->withoutOverlapping(10);
+```
 
 **Running Tasks On One Server**
 
->To utilize this feature, you must config mutex in the application component, except the FileMutex:  `yii\mutex\MysqlMutex`,`yii\mutex\PgsqlMutex`,`yii\mutex\OracleMutex` or `yii\redis\Mutex`. In addition, all servers must be communicating with the same central db/cache server.
-
-Below shows the redis mutex demo:
-
-```php
-'components' => [
-    'mutex' => [
-        'class' => 'yii\redis\Mutex',
-        'redis' => [
-            'hostname' => 'localhost',
-            'port' => 6379,
-            'database' => 0,
-        ]
-    ],
-],
-```
+>To utilize this feature, your application must be using the `memcached` or `redis` cache driver as your application's default cache driver. In addition, all servers must be communicating with the same central cache server.
 
 ```php
 $schedule->command('report:generate')
@@ -178,6 +169,19 @@ $schedule->command('report:generate')
                 ->at('17:00')
                 ->onOneServer();
 ```
+
+**Background Tasks**
+
+By default, multiple commands scheduled at the same time will execute sequentially.
+If you have long-running commands, this may cause subsequent commands to start much later than anticipated.
+If you would like to run commands in the background so that they may all run simultaneously,
+you may use the `runInBackground` method:
+
+```php
+$schedule->command('report:generate')->daily()->runInBackground($currentScheduleFilePath);
+```
+
+> The `runInBackground` method may only be used when scheduling tasks via the `command` and `exec` methods.
 
 How to use this extension in your application?
 ----------------------------------------------
