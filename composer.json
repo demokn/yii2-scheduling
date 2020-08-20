@@ -1,5 +1,5 @@
 {
-  "name": "omnilight/yii2-scheduling",
+  "name": "demokn/yii2-scheduling",
   "description": "Scheduling extension for Yii2 framework",
   "keywords": [
     "yii",
@@ -25,6 +25,9 @@
   },
   "suggest": {
     "guzzlehttp/guzzle": "Required to use the thenPing method on schedules (~5.0)."
+  },
+  "conflict": {
+    "omnilight/yii2-scheduling": "*"
   },
   "autoload": {
     "psr-4": {
